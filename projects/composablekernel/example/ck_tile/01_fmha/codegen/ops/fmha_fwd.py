@@ -1719,7 +1719,7 @@ class KernelComponentFactoryGfx12(CompatibilityRuleFactory):
 
     @staticmethod
     def check_d128_tile(tile, pipeline) -> bool:
-        # PV32 avoids no-bias dropout spills; masked bias can also use PV16.
+        # No-bias dropout uses PV64; masked bias and biased dropout can use PV16.
         masked_bias = pipeline.F_bias == "bias" and pipeline.F_mask not in (
             "no",
             "s_no",
@@ -1728,8 +1728,8 @@ class KernelComponentFactoryGfx12(CompatibilityRuleFactory):
         if tile.F_bm0 != 64:
             return not dropout and not masked_bias
         if dropout:
-            return tile.F_bk1 == (32 if pipeline.F_bias == "no" else 16)
-        return tile.F_bk1 == 32 or masked_bias
+            return tile.F_bk1 == (64 if pipeline.F_bias == "no" else 16)
+        return tile.F_bk1 == 64 or masked_bias
 
     @staticmethod
     def check_d256_tile(tile, pipeline) -> bool:
@@ -1742,10 +1742,11 @@ class KernelComponentFactoryGfx12(CompatibilityRuleFactory):
     @classmethod
     def get_hdim_tile_size_dict(cls, dtype: str) -> Optional[dict]:
         if dtype in cls._DT_FP16_BF16:
-            # Use M64 for dropout, masking, or short Q.
+            # Use M64 for dropout, masking, short Q, or short padded single sequences.
             m64_d64_constraint = (
                 "t.has_dropout || t.mask_type != mask_enum::no_mask || "
-                "a.max_seqlen_q < 1024"
+                "a.max_seqlen_q < 1024 || "
+                "(a.batch == 1 && a.max_seqlen_q < 2048 && a.max_seqlen_q % 128 != 0)"
             )
             # Use M64 for masked bias, dropout, short Q, or too few M256 blocks.
             m64_d128_constraint = (
@@ -1757,7 +1758,7 @@ class KernelComponentFactoryGfx12(CompatibilityRuleFactory):
                 "a.max_seqlen_q, 256) <= "
                 "(t.mask_type == mask_enum::no_mask ? 2 : 4) * num_cus"
             )
-            # Cap Q's contribution so long sequences with few heads retain PV32.
+            # Cap Q's contribution so long sequences with few heads retain the general M64 tile.
             m64_d128_pv16_constraint = (
                 "t.has_dropout || get_num_thread_blocks(a.batch, "
                 "a.num_head_q_total > 0 ? a.num_head_q_total : a.nhead_q, "
@@ -1771,7 +1772,7 @@ class KernelComponentFactoryGfx12(CompatibilityRuleFactory):
                               FmhaFwdTileSize( 64,  64,  32,  64,  32,   64,  4, 1, 1,  4, 1, 1,  16, 16, 16,  16, 16, 16,  -1, CppConstraint(m64_d64_constraint)),
                               FmhaFwdTileSize(128, 128,  32,  64, 128,   64,  8, 1, 1,  8, 1, 1,  16, 16, 16,  16, 16, 16,  -1)],
                 (128, 128) : [FmhaFwdTileSize( 64,  64,  32, 128,  16,  128,  4, 1, 1,  4, 1, 1,  16, 16, 16,  16, 16, 16,   6, CppConstraint(m64_d128_pv16_constraint)),
-                              FmhaFwdTileSize( 64,  64,  32, 128,  32,  128,  4, 1, 1,  4, 1, 1,  16, 16, 16,  16, 16, 16,   6, CppConstraint(m64_d128_constraint)),
+                              FmhaFwdTileSize( 64,  64,  32, 128,  64,  128,  4, 1, 1,  4, 1, 1,  16, 16, 16,  16, 16, 16,   6, CppConstraint(m64_d128_constraint)),
                               FmhaFwdTileSize(256,  64,  64, 128,  64,  128, 16, 1, 1, 16, 1, 1,  16, 16, 16,  16, 16, 16,   8)],
                 (192, 128) : [FmhaFwdTileSize(128,  64,  64, 128,  64,  256,  8, 1, 1,  8, 1, 1,  16, 16, 16,  16, 16, 16,   6)],
                 (256, 256) : [FmhaFwdTileSize( 64,  64,  32, 256,  16,  256,  4, 1, 1,  4, 1, 1,  16, 16, 16,  16, 16, 16,  -1),
