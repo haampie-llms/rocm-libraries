@@ -21588,7 +21588,7 @@ class KernelWriterAssembly(KernelWriter):
       maxVgprsN, occupancy = self.setOccupancy(kernel)
       if maxVgprs != maxVgprsN:
         #print("refineOccupancy maxVgprs, new", maxVgprsN, "old", maxVgprs)
-        return self.refineOccupancy(kernel, atomic, element, actPCMaxTempSgpr, gwvw, maxVgprsN, ss, beta, edge)
+        return self.refineOccupancy(kernel, atomic, element, actPCMaxTempSgpr, gwvw, maxVgprsN, ss, beta, edge, storeRemap)
       # After growing, try block-aware count again; fall back to simple count
       # if the pool is too fragmented for aligned blocks
       numVgprAvailable = self.vgprPool.availableBlockMaxVgpr(maxVgprs, ss.numVgprsPerElement, ss.align)
@@ -21741,7 +21741,7 @@ class KernelWriterAssembly(KernelWriter):
       maxVgprsN, occupancy = self.setOccupancy(kernel)
       if maxVgprs != maxVgprsN:
         #print("refineOccupancy maxVgprs, new", maxVgprsN, "old", maxVgprs)
-        return self.refineOccupancy(kernel, atomic, element, actPCMaxTempSgpr, gwvw, maxVgprsN, ss, beta, edge)
+        return self.refineOccupancy(kernel, atomic, element, actPCMaxTempSgpr, gwvw, maxVgprsN, ss, beta, edge, storeRemap)
 
     # # Get true numVgprAvailable
     # numVgprAvailable = self.vgprPool.availableBlock(ss.numVgprsPerElement, ss.align)
@@ -21757,7 +21757,7 @@ class KernelWriterAssembly(KernelWriter):
     maxVgprsN, occupancy = self.setOccupancy(kernel)
     if maxVgprs != maxVgprsN:
       #print("refineOccupancy maxVgprs, new", maxVgprsN, "old", maxVgprs)
-      return self.refineOccupancy(kernel, atomic, element, actPCMaxTempSgpr, gwvw, maxVgprsN, ss, beta, edge)
+      return self.refineOccupancy(kernel, atomic, element, actPCMaxTempSgpr, gwvw, maxVgprsN, ss, beta, edge, storeRemap)
     return numElementsPerBatch, nBatchesPerRow, numBatches, numSgprs
 
 
