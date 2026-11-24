@@ -51,6 +51,11 @@ const std::vector<IngestorPack>& ingestorPacks();
 void registerPointwiseSymbols(hipdnn_plugin_sdk::ingestor::SymbolScope<Handle>& scope);
 void resetPointwiseModuleCache();
 
+#ifdef HIPDNN_ENGINE_HIP_MLOPS_INGESTOR
+/// @see packs/HipMlopsNative.cpp
+void registerHipMlopsSymbols(hipdnn_plugin_sdk::ingestor::SymbolScope<Handle>& scope);
+#endif
+
 /// @see packs/BatchnormInferencePointwiseNative.cpp
 void registerBatchnormInferencePointwiseSymbols(
     hipdnn_plugin_sdk::ingestor::SymbolScope<Handle>& scope);
