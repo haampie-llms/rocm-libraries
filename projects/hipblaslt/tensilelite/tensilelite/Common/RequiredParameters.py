@@ -180,6 +180,7 @@ def getRequiredParametersMin() -> set:
         'WavefrontSize',
         'WorkGroup',
         'WorkGroupMappingXCC',
+        'WGMRemapMagic',
         'DtlPlusLdsBuf',
         'TDMPlusLdsBuf',
         'MinGRIncPerMfma',

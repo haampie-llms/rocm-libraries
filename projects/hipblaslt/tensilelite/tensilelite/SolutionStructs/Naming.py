@@ -242,6 +242,9 @@ def _getName(state, requiredParameters: frozenset, splitGSU: bool, ignoreInterna
     # three values still map to three distinct names.
     if not state.get("LDSTrStoreShuffle", 0):
       requiredParametersTemp.discard("LDSTrStoreShuffle")
+    # Same for WGMRemapMagic: 0 is the original remap, so only 1 is named.
+    if not state.get("WGMRemapMagic", 0):
+      requiredParametersTemp.discard("WGMRemapMagic")
 
     # PostLoopStoreInNll changes codegen only when it is ON, and
     # assignPostLoopStoreInNll resolves it independently of isMxf4SubtilePath -- an

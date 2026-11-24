@@ -3584,6 +3584,13 @@ class Solution(collections.abc.Mapping):
                      % (state["LDSTrStoreShuffle"], _ssWhy, _ssClamp))
       state["LDSTrStoreShuffle"] = 0
 
+    # WGMRemapMagic only changes DefaultWGM. SpaceFillingCurveWalk and the cluster remap
+    # replace DefaultWGM, so the flag would only rename an otherwise identical kernel.
+    if state["WGMRemapMagic"]:
+      if len(state["SpaceFillingAlgo"]) or clusterEnabled(state["ClusterDim"]):
+        reject(state, printRejectionReason, "WGMRemapMagic requires DefaultWGM (no SpaceFillingAlgo, no ClusterDim)")
+        return
+
     # enableLDSTrA used to clamp VectorWidthA unconditionally: ds_read_tr fixes the lane->row
     # stride at 1, so a wider store had nothing to read. storeShuffleForLDSTrVW lifts that by
     # re-ordering the accumulators in the epilogue, but only when asked -- LDSTrStoreShuffle 0
