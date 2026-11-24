@@ -1712,7 +1712,7 @@
         2,
         4,
       ]),
-      'len': 9,
+      'len': 11,
       'type': 'list',
     }),
     'AssertTensorBytesLessThan': dict({
