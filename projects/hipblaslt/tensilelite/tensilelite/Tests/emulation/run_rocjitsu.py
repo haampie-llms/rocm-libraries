@@ -40,6 +40,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 
 HERE = Path(__file__).resolve().parent
 
@@ -352,9 +353,10 @@ def summarize(report_dir, result, title="rocjitsu", summary_path=None):
 
 
 def gtest_results(report_dir):
-    """Per-test (name, seconds, outcome) from the gtest XML files in report_dir/gtest."""
-    import xml.etree.ElementTree as ET
+    """Per-test (name, seconds, outcome) from the gtest XML files in report_dir/gtest.
 
+    Raises xml.etree.ElementTree.ParseError for a file gtest did not finish writing.
+    """
     tests = []
     for path in sorted((report_dir / "gtest").glob("*.xml")):
         for case in ET.parse(path).getroot().iter("testcase"):
@@ -371,12 +373,16 @@ def gtest_results(report_dir):
 
 def summarize_gtest(report_dir, result, title="rocjitsu", summary_path=None):
     """Summary for a gtest binary: counts, failures and the slowest tests."""
-    tests = gtest_results(report_dir)
+    try:
+        tests = gtest_results(report_dir)
+    except ET.ParseError as error:
+        tests = []
+        result["error"] = f"unreadable gtest XML: {error}"
     counts = {k: sum(t[2] == k for t in tests) for k in ("passed", "failed", "skipped")}
     result["complete"] = bool(tests) and not result["timed_out"]
     if result["exit_code"] == 0 and not counts["passed"]:
         result["exit_code"] = 1
-        result["error"] = "the gtest run reported no passing tests"
+        result.setdefault("error", "the gtest run reported no passing tests")
     (report_dir / "execution.json").write_text(json.dumps(result, indent=2) + "\n")
     seconds = sum(t[1] for t in tests)
     print(f"rocjitsu gtest results: {dict(tests=len(tests), **counts)} test_seconds={seconds:.0f}", flush=True)

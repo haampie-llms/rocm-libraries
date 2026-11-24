@@ -496,3 +496,11 @@ def test_gtest_mode_fails_without_results(tmp_path):
     result = dict(exit_code=0, timed_out=False, wall_seconds=1)
     assert launcher.summarize_gtest(tmp_path, result) == 1
     assert "no passing tests" in result["error"]
+
+
+def test_gtest_mode_reports_a_half_written_xml(tmp_path):
+    (tmp_path / "gtest").mkdir()
+    (tmp_path / "gtest" / "cut.xml").write_text("<testsuites><testsuite")
+    result = dict(exit_code=0, timed_out=False, wall_seconds=1)
+    assert launcher.summarize_gtest(tmp_path, result) == 1
+    assert result["error"].startswith("unreadable gtest XML")
