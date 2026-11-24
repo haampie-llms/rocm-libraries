@@ -12,8 +12,10 @@
 #include "compilation/IRunnableKernel.hpp"
 #include "core/Handle.hpp"
 #include "core/Utils.hpp"
+#include "engines/hip_mlops_engine/plans/RMSnorm/RMSnormCommon.hpp"
 
 #include <memory>
+#include <string>
 
 namespace hip_kernel_provider
 {
@@ -67,6 +69,15 @@ private:
     std::optional<core::utils::ActivationParams> _optActivation;
     const hipdnn_flatbuffers_sdk::data_objects::TensorAttributes* _activationOut;
 };
+
+/// The compile options and single launch of the RMSnormFwd kernel for @p params on
+/// @p gcnArchName. A fused activation is compiled in; its alpha and beta are launch
+/// arguments.
+///
+/// @throws HipdnnPluginException with BAD_PARAM for a tensor that is not 4D or 5D, or a grid
+///         that does not fit one launch.
+RMSnormKernelBuild buildRMSnormFwdKernel(const RMSnormFwdParams& params,
+                                         const std::string& gcnArchName);
 
 class RMSnormFwdPlan : public hipdnn_plugin_sdk::IPlan<Handle>
 {
