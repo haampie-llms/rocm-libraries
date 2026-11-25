@@ -833,8 +833,14 @@ struct BlockFmhaPipelineQRKSVS
                         s_acc(i_j_idx) *= scale_s;
                         position_encoding.update(s_acc(i_j_idx), row, col);
 #if defined(__gfx117__)
-                        // Limit live ALiBi offsets by consuming each updated score.
-                        impl::insert_dummy_dep(s_acc(i_j_idx));
+                        // Limit live ALiBi offsets, except where that adds spills.
+                        constexpr bool kSkipAlibiScoreDep =
+                            FmhaMask::IsMasking
+                                ? !kHasDropout && kQKHeaddim != 64
+                                : kHasDropout && (kQKHeaddim == 128 ||
+                                                  (kQKHeaddim == 64 && kUseHdimTailArgs));
+                        if constexpr(!kSkipAlibiScoreDep)
+                            impl::insert_dummy_dep(s_acc(i_j_idx));
 #elif defined(__gfx120__)
                         // Limit ALiBi live ranges in D256 and the M64/PV64 D128 tile.
                         if constexpr(kN1 == 256 || (kM0 == 64 && kN1 == 128 && kK1 == 64))
