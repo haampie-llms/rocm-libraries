@@ -1733,9 +1733,11 @@ class KernelComponentFactoryGfx12(CompatibilityRuleFactory):
 
     @staticmethod
     def check_d256_tile(tile, pipeline) -> bool:
-        # Use M64 for masked inputs unless both bias and head padding are present.
+        # Masked inputs use M64 with sink when unbiased, or without head padding when biased.
         small = pipeline.F_mask not in ("no", "s_no") and (
-            pipeline.F_bias == "no" or pipeline.F_dpad == pipeline.F_dvpad == "f"
+            pipeline.F_sink == "t"
+            if pipeline.F_bias == "no"
+            else pipeline.F_dpad == pipeline.F_dvpad == "f"
         )
         return (tile.F_bm0 == 64) == small
 
