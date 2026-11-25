@@ -1878,14 +1878,14 @@ class KernelComponentFactoryGfx117(CompatibilityRuleFactory):
 
     @staticmethod
     def check_d128_tile(tile, pipeline) -> bool:
-        # Bias/dropout needs QK32/PV32; no-bias dropout keeps QK64/PV64.
+        # Bias/dropout needs QK32/PV32; other dropout keeps QK64/PV64.
         bias_dropout = pipeline.F_bias == "bias" and pipeline.F_dropout == "t"
         if tile.F_bk0 == 32:
             return bias_dropout
         if bias_dropout:
             return False
         if pipeline.F_bias != "no":
-            return tile.F_bn0 == 128
+            return tile.F_bn0 == (64 if pipeline.F_dropout == "t" else 128)
         # Keep one padded pipeline; masked no-dropout heads use it as well.
         if pipeline.F_dpad == "t" and pipeline.tag != "qr_hpad":
             return False
