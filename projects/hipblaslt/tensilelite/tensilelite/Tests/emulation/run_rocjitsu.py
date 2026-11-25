@@ -27,7 +27,10 @@ AMDGPU_TARGETS / AMDGPU_FAMILIES, optional ROCJITSU_REPORT_DIR,
 ROCJITSU_SUITE_TIMEOUT / ROCJITSU_SUITE_GRACE (seconds), PYTEST_TEST_TIMEOUT,
 PYTEST_NUM_WORKERS, SHARD_INDEX / TOTAL_SHARDS, GITHUB_STEP_SUMMARY.
 ROCJITSU_GTEST=1 runs a gtest binary instead of pytest: one process with every
-core, gtest sharding from SHARD_INDEX / TOTAL_SHARDS, and a summary from its XML.
+core on this job's shard of the binary's tests (SHARD_INDEX / TOTAL_SHARDS). A
+test that runs longer than ROCJITSU_GTEST_TEST_TIMEOUT seconds is killed,
+counted as timed out, and the binary restarts with the tests after it; at the
+suite timeout the run stops and lists the tests that never ran.
 """
 
 import contextlib
@@ -35,10 +38,13 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import queue
+import re
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import xml.etree.ElementTree as ET
 
@@ -62,6 +68,14 @@ DEFAULT_TEST_TIMEOUT = 45 * 60
 # step with time left to reap, summarize and exit.
 DEFAULT_SUITE_TIMEOUT = 90 * 60
 STALL_LEAD = 300
+# Per gtest test. On TheRock's 32-core CPU runner no passing hipBLASLt or
+# hipSPARSELt test took over 235 s (a bert-size spmm), so 300 s stops only
+# hung tests and emulator-bound stress cases, e.g. the size_t overflow GEMMs.
+DEFAULT_GTEST_TEST_TIMEOUT = 300
+# "[ RUN      ] Suite.test", "[       OK ] Suite.test (12 ms)", ...
+# A parameterized failure reads "[  FAILED  ] Suite.test, where GetParam() = ...".
+GTEST_LINE = re.compile(r"^\[ *(RUN|OK|FAILED|SKIPPED) *\] ([^\s,]+)")
+GTEST_OUTCOMES = {"OK": "passed", "FAILED": "failed", "SKIPPED": "skipped"}
 
 
 def rocm_root(env):
@@ -186,10 +200,9 @@ def emulation_setup(env, cores, report_dir, memory=None):
         ROCJITSU_RUNTIME_DIR=tempfile.mkdtemp(prefix="rocjitsu-"),
     )
     if gtest:
-        # The CI job's shard picks this process's share of the binary's tests.
-        env.setdefault("GTEST_TOTAL_SHARDS", env.get("TOTAL_SHARDS", "1"))
-        env.setdefault("GTEST_SHARD_INDEX", str(int(env.get("SHARD_INDEX", "1")) - 1))
-        env["GTEST_OUTPUT"] = f"xml:{report_dir / 'gtest'}/"
+        # run_gtest passes this shard's tests by name; gtest must not shard them again.
+        env.pop("GTEST_TOTAL_SHARDS", None)
+        env.pop("GTEST_SHARD_INDEX", None)
     prepend(env, "PYTHONPATH", str(HERE))
     prepend(env, "PATH", str(rocm / "bin"), str(rocm / "lib" / "llvm" / "bin"))
     prepend(
@@ -234,7 +247,9 @@ def reap_descendants():
         time.sleep(0.01)
 
 
-def supervise(command, env, timeout, grace):
+def become_subreaper():
+    """Adopt orphaned descendants, so reap_descendants can kill them; raise on
+    SIGTERM / SIGINT (e.g. a cancelled CI step) so callers clean up first."""
     if sys.platform != "linux":
         raise RuntimeError("rocjitsu emulation runs require Linux")
     # PR_SET_CHILD_SUBREAPER applies only to this process and needs no privilege.
@@ -247,6 +262,10 @@ def supervise(command, env, timeout, grace):
 
     for signum in (signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, interrupt)
+
+
+def supervise(command, env, timeout, grace):
+    become_subreaper()
     start = time.monotonic()
     timed_out = False
     proc = subprocess.Popen(command, env=env, start_new_session=True)
@@ -352,6 +371,143 @@ def summarize(report_dir, result, title="rocjitsu", summary_path=None):
     return result["exit_code"]
 
 
+def list_gtests(command, env):
+    """Test names ("Suite.test") the command runs, in gtest's run order."""
+    listing = subprocess.run(
+        [*command, "--gtest_list_tests"], env=env, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, text=True, check=True, timeout=600,
+    ).stdout
+    names, suite = [], None
+    for line in listing.splitlines():
+        # "Suite.  # TypeParam = ..." then "  test  # GetParam() = ..."
+        if match := re.match(r"^(\S+\.)\s*(#.*)?$", line):
+            suite = match.group(1)
+        elif suite and (match := re.match(r"^  (\S+)", line)):
+            names.append(suite + match.group(1))
+    # gtest lists DISABLED_ tests but never runs them.
+    return [n for n in names if not re.search(r"(^|[./])DISABLED_", n)]
+
+
+def run_gtest(command, env, report_dir, shard, test_timeout, suite_timeout):
+    """Run this shard's tests; return (result, {name: (outcome, seconds)}).
+
+    shard is (1-based index, total), like TheRock's SHARD_INDEX / TOTAL_SHARDS:
+    every total-th test of the listing, as gtest's own sharding would pick.
+    A test still running after test_timeout seconds is killed and recorded as
+    "timed out"; one the binary died in is "crashed". Either way the binary
+    restarts with the tests after it, so one slow or hung test costs at most
+    test_timeout. At suite_timeout the run stops; tests not run are
+    "not run". Outcomes come from gtest's console lines, which exist for a
+    killed run; the XML gtest writes on a normal exit overrides them.
+    """
+    become_subreaper()
+    start = time.monotonic()
+    deadline = start + suite_timeout
+    index, total = shard
+    tests = list_gtests(command, env)[index - 1 :: total]
+    outcomes = {}
+    result = dict(exit_code=0, timed_out=False, selected=len(tests), segments=0)
+    pending = tests
+    try:
+        run_gtest_segments(command, env, report_dir, pending, outcomes, result,
+                           test_timeout, deadline)
+    except InterruptedError as error:
+        result.update(exit_code=128 + error.args[0], error="interrupted")
+    if time.monotonic() >= deadline:
+        result["timed_out"] = True
+    for name in tests:
+        outcomes.setdefault(name, ("not run", 0.0))
+    result["wall_seconds"] = time.monotonic() - start
+    return result, {name: outcomes[name] for name in tests}
+
+
+def run_gtest_segments(command, env, report_dir, pending, outcomes, result,
+                       test_timeout, deadline):
+    """Restart the binary on the tests not yet finished until none are left."""
+    flagfile = report_dir / "gtest-filter.txt"
+    while pending and time.monotonic() < deadline:
+        result["segments"] += 1
+        # A flag file: the filter for ~20,000 tests is over the 128 KiB a
+        # single command-line argument may hold.
+        flagfile.write_text("--gtest_filter=" + ":".join(pending) + "\n")
+        xml = report_dir / "gtest" / f"segment-{result['segments']}.xml"
+        stopped = run_gtest_segment(
+            [*command, f"--gtest_flagfile={flagfile}"],
+            dict(env, GTEST_OUTPUT=f"xml:{xml}"), outcomes, test_timeout, deadline,
+        )
+        remaining = [name for name in pending if name not in outcomes]
+        if stopped == "suite timeout":
+            result["timed_out"] = True
+            break
+        if remaining == pending:
+            # The binary started none of them: rerunning would loop forever.
+            result["error"] = f"gtest ran none of {len(pending)} remaining tests"
+            break
+        pending = remaining
+
+
+def run_gtest_segment(command, env, outcomes, test_timeout, deadline):
+    """Run the binary once, echoing its output; record each test's outcome.
+
+    Returns None when the binary exited by itself, else why it was killed:
+    "test timeout" or "suite timeout".
+    """
+    lines = queue.Queue()
+    proc = subprocess.Popen(
+        command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, errors="replace", start_new_session=True,
+    )
+
+    def read():
+        for line in proc.stdout:
+            lines.put(line)
+        lines.put(None)
+
+    threading.Thread(target=read, daemon=True).start()
+    current, started, stopped = None, 0.0, None
+    try:
+        while True:
+            try:
+                line = lines.get(timeout=1)
+            except queue.Empty:
+                line = ""
+            if line is None:
+                break
+            if line:
+                print(line, end="", flush=True)
+                match = GTEST_LINE.match(line)
+                if match and match.group(1) == "RUN":
+                    current, started = match.group(2), time.monotonic()
+                elif match and match.group(2) == current:
+                    outcomes[current] = (
+                        GTEST_OUTCOMES[match.group(1)], time.monotonic() - started
+                    )
+                    current = None
+            now = time.monotonic()
+            if current and now - started > test_timeout:
+                stopped = "test timeout"
+            elif now >= deadline:
+                stopped = "suite timeout"
+            if stopped:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                break
+    finally:
+        if proc.poll() is None:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        reap_descendants()
+    if current:
+        # The test the binary was in when it was killed or died.
+        outcome = {"test timeout": "timed out", "suite timeout": "not run"}.get(
+            stopped, "crashed"
+        )
+        outcomes[current] = (outcome, time.monotonic() - started)
+        print(f"rocjitsu: {outcome}: {current} after {outcomes[current][1]:.0f} s", flush=True)
+    return stopped
+
+
 def gtest_results(report_dir):
     """Per-test (name, seconds, outcome) from the gtest XML files in report_dir/gtest.
 
@@ -371,26 +527,43 @@ def gtest_results(report_dir):
     return tests
 
 
-def summarize_gtest(report_dir, result, title="rocjitsu", summary_path=None):
-    """Summary for a gtest binary: counts, failures and the slowest tests."""
+GTEST_GROUPS = ("failed", "timed out", "crashed", "not run")
+
+
+def summarize_gtest(report_dir, result, title="rocjitsu", summary_path=None, outcomes=None):
+    """Summary for a gtest binary: counts, tests that did not pass, slowest tests.
+
+    outcomes ({name: (outcome, seconds)}) comes from run_gtest; the XML files
+    gtest wrote override it for the tests they contain.
+    """
+    outcomes = dict(outcomes or {})
     try:
-        tests = gtest_results(report_dir)
+        for name, seconds, outcome in gtest_results(report_dir):
+            outcomes[name] = (outcome, seconds)
     except ET.ParseError as error:
-        tests = []
         result["error"] = f"unreadable gtest XML: {error}"
-    counts = {k: sum(t[2] == k for t in tests) for k in ("passed", "failed", "skipped")}
-    result["complete"] = bool(tests) and not result["timed_out"]
-    if result["exit_code"] == 0 and not counts["passed"]:
-        result["exit_code"] = 1
-        result.setdefault("error", "the gtest run reported no passing tests")
+    counts = {
+        k: sum(o == k for o, _ in outcomes.values())
+        for k in ("passed", "skipped", *GTEST_GROUPS)
+    }
+    groups = {k: [n for n, (o, _) in outcomes.items() if o == k] for k in GTEST_GROUPS}
+    result["complete"] = bool(outcomes) and not groups["not run"] and not result["timed_out"]
+    if result["exit_code"] == 0:
+        if not counts["passed"]:
+            result["exit_code"] = 1
+            result.setdefault("error", "the gtest run reported no passing tests")
+        elif any(groups.values()) or result.get("error"):
+            result["exit_code"] = 1
     (report_dir / "execution.json").write_text(json.dumps(result, indent=2) + "\n")
-    seconds = sum(t[1] for t in tests)
-    print(f"rocjitsu gtest results: {dict(tests=len(tests), **counts)} test_seconds={seconds:.0f}", flush=True)
-    failed = [t[0] for t in tests if t[2] == "failed"]
-    for name in failed:
-        print(f"  failed: {name}", flush=True)
+    seconds = sum(s for _, s in outcomes.values())
+    print(f"rocjitsu gtest results: {dict(tests=len(outcomes), **counts)} test_seconds={seconds:.0f}", flush=True)
+    for group, names in groups.items():
+        for name in names[:50]:
+            print(f"  {group}: {name}", flush=True)
+        if len(names) > 50:
+            print(f"  ... {len(names) - 50} more {group}", flush=True)
     print("rocjitsu gtest slowest:", flush=True)
-    for name, secs, _ in sorted(tests, key=lambda t: -t[1])[:20]:
+    for name, (_, secs) in sorted(outcomes.items(), key=lambda t: -t[1][1])[:20]:
         print(f"  {secs:8.1f} s  {name}", flush=True)
     print(f"rocjitsu gtest execution: {result}", flush=True)
     if summary_path:
@@ -398,15 +571,21 @@ def summarize_gtest(report_dir, result, title="rocjitsu", summary_path=None):
         lines = [
             f"### {title}: {status}",
             "",
-            "| tests | passed | failed | skipped | test minutes | wall minutes |",
-            "|---|---|---|---|---|---|",
-            f"| {len(tests)} | {counts['passed']} | {counts['failed']} | {counts['skipped']} "
-            f"| {seconds / 60:.0f} | {result.get('wall_seconds', 0) / 60:.0f} |",
+            "| tests | passed | failed | timed out | crashed | not run | skipped "
+            "| test minutes | wall minutes |",
+            "|---|---|---|---|---|---|---|---|---|",
+            f"| {len(outcomes)} | {counts['passed']} | {counts['failed']} "
+            f"| {counts['timed out']} | {counts['crashed']} | {counts['not run']} "
+            f"| {counts['skipped']} | {seconds / 60:.0f} "
+            f"| {result.get('wall_seconds', 0) / 60:.0f} |",
         ]
         if result.get("error"):
             lines += ["", f"Error: {result['error']}"]
-        if failed:
-            lines += ["", "Failed:", *(f"- `{name}`" for name in failed)]
+        for group in ("failed", "timed out", "crashed"):
+            if groups[group]:
+                lines += ["", f"{group.capitalize()}:", *(f"- `{n}`" for n in groups[group])]
+        if groups["not run"]:
+            lines += ["", f"Not run: {len(groups['not run'])} tests (suite timeout)."]
         try:
             with open(summary_path, "a") as summary:
                 summary.write("\n".join(lines) + "\n")
@@ -436,16 +615,27 @@ def main(argv=None, env=None):
         memory = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     prefix, run_env = emulation_setup(env, cores, report_dir, memory)
     timeout = float(env.get("ROCJITSU_SUITE_TIMEOUT") or DEFAULT_SUITE_TIMEOUT)
+    title = "rocjitsu {} shard {}/{}".format(
+        emulated_target(env), env.get("SHARD_INDEX", 1), env.get("TOTAL_SHARDS", 1)
+    )
+    if env.get("ROCJITSU_GTEST") == "1":
+        shard = (int(env.get("SHARD_INDEX") or 1), int(env.get("TOTAL_SHARDS") or 1))
+        test_timeout = float(env.get("ROCJITSU_GTEST_TEST_TIMEOUT") or DEFAULT_GTEST_TEST_TIMEOUT)
+        outcomes = {}
+        try:
+            result, outcomes = run_gtest(
+                [*prefix, *command], run_env, report_dir, shard, test_timeout, timeout
+            )
+        except (OSError, RuntimeError, InterruptedError, subprocess.SubprocessError) as error:
+            result = dict(exit_code=1, timed_out=False, error=repr(error))
+        return summarize_gtest(
+            report_dir, result, title, env.get("GITHUB_STEP_SUMMARY"), outcomes
+        )
     try:
         grace = float(env.get("ROCJITSU_SUITE_GRACE") or 30)
         result = supervise([*prefix, *command], run_env, timeout, grace)
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
         result = dict(exit_code=1, timed_out=False, error=str(error))
-    title = "rocjitsu {} shard {}/{}".format(
-        emulated_target(env), env.get("SHARD_INDEX", 1), env.get("TOTAL_SHARDS", 1)
-    )
-    if env.get("ROCJITSU_GTEST") == "1":
-        return summarize_gtest(report_dir, result, title, env.get("GITHUB_STEP_SUMMARY"))
     return summarize(report_dir, result, title, env.get("GITHUB_STEP_SUMMARY"))
 
 

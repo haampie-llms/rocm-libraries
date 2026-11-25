@@ -451,24 +451,45 @@ def test_durations_cover_rocjitsu_slow_configs():
 
 
 FAKE_GTEST = """
-import os, sys
+import os, sys, time
 from pathlib import Path
+# Tests: s.ok_0 .. s.ok_5, plus s.bad (fails), s.hang (never ends), s.crash
+# (kills the binary) when named in FAKE_GTEST_TESTS.
+names = os.environ.get("FAKE_GTEST_TESTS", "ok_0,ok_1,ok_2,ok_3,ok_4,ok_5").split(",")
+if "--gtest_list_tests" in sys.argv:
+    print("rocjitsu: banner line")
+    print("s.  # TypeParam = int")
+    for name in names:
+        print(f"  {name}  # GetParam() = 1")
+    sys.exit(0)
+assert "GTEST_SHARD_INDEX" not in os.environ, "the launcher must shard, not gtest"
+flags = [a for a in sys.argv if a.startswith("--gtest_flagfile=")]
+selected = Path(flags[0].split("=", 1)[1]).read_text().strip()
+selected = selected.removeprefix("--gtest_filter=").split(":")
+with open(os.environ["FAKE_GTEST_RUNS"], "a") as runs:
+    runs.write(",".join(selected) + "\\n")
+cases = []
+for test in selected:
+    name = test.removeprefix("s.")
+    print(f"[ RUN      ] {test}", flush=True)
+    if name == "hang":
+        time.sleep(600)
+    if name == "crash":
+        os._exit(139)
+    if name == "bad":
+        print(f"[  FAILED  ] {test}, where GetParam() = 1 (5 ms)", flush=True)
+        cases.append(f'<testcase classname="s" name="{name}" time="0.005"><failure message="x"/></testcase>')
+    else:
+        print(f"[       OK ] {test} (2 ms)", flush=True)
+        cases.append(f'<testcase classname="s" name="{name}" time="2.5"/>')
 out = Path(os.environ["GTEST_OUTPUT"].removeprefix("xml:"))
-out.mkdir(parents=True, exist_ok=True)
-shard = os.environ["GTEST_SHARD_INDEX"] + "/" + os.environ["GTEST_TOTAL_SHARDS"]
-fail = '<failure message="bad"/>' if "fail" in sys.argv else ""
-(out / "fake.xml").write_text(
-    '<testsuites><testsuite name="s">'
-    f'<testcase classname="s" name="ok_{shard}" time="2.5"/>'
-    f'<testcase classname="s" name="bad" time="0.1">{fail}</testcase>'
-    '</testsuite></testsuites>')
-sys.exit(1 if fail else 0)
+out.parent.mkdir(parents=True, exist_ok=True)
+out.write_text("<testsuites><testsuite>" + "".join(cases) + "</testsuite></testsuites>")
+sys.exit(1 if "bad" in [t.removeprefix("s.") for t in selected] else 0)
 """
 
 
-@linux_only
-@pytest.mark.parametrize("args, code", [((), 0), (("fail",), 1)])
-def test_gtest_mode_shards_and_summarizes(tmp_path, rocm, args, code):
+def run_fake_gtest(tmp_path, rocm, tests=None, shard=("1", "1"), **extra):
     (tmp_path / "fake_gtest.py").write_text(FAKE_GTEST)
     reports, summary = tmp_path / "reports", tmp_path / "summary.md"
     env = {
@@ -477,19 +498,77 @@ def test_gtest_mode_shards_and_summarizes(tmp_path, rocm, args, code):
         "AMDGPU_TARGETS": "gfx1250",
         "ROCJITSU_GTEST": "1",
         "ROCJITSU_REPORT_DIR": str(reports),
-        "SHARD_INDEX": "2",
-        "TOTAL_SHARDS": "3",
+        "SHARD_INDEX": shard[0],
+        "TOTAL_SHARDS": shard[1],
         "GITHUB_STEP_SUMMARY": str(summary),
+        "FAKE_GTEST_RUNS": str(tmp_path / "runs.txt"),
+        # gtest sharding must be off for the binary even if the job sets it.
+        "GTEST_SHARD_INDEX": "0",
+        "GTEST_TOTAL_SHARDS": "9",
+        **({"FAKE_GTEST_TESTS": ",".join(tests)} if tests else {}),
+        **extra,
     }
     command = [sys.executable, str(EMULATION / "run_rocjitsu.py"), "--",
-               sys.executable, str(tmp_path / "fake_gtest.py"), *args]
-    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=60)
+               sys.executable, str(tmp_path / "fake_gtest.py")]
+    result = subprocess.run(command, env=env, capture_output=True, text=True, timeout=120)
+    execution = json.loads((reports / "execution.json").read_text())
+    runs = (tmp_path / "runs.txt").read_text().splitlines()
+    return result, execution, summary.read_text(), runs
+
+
+@linux_only
+@pytest.mark.parametrize("bad, code", [(False, 0), (True, 1)])
+def test_gtest_mode_shards_and_summarizes(tmp_path, rocm, bad, code):
+    tests = ["ok_0", "bad", "ok_2", "ok_3", "ok_4", "ok_5"] if bad else None
+    result, execution, text, runs = run_fake_gtest(tmp_path, rocm, tests, shard=("2", "3"))
     assert result.returncode == code, result.stdout + result.stderr
     assert "threads_per_worker=" in result.stdout and "workers=1 " in result.stdout
-    assert "s.ok_1/3" in result.stdout
-    text = summary.read_text()
+    # Shard 2 of 3 is every third test from the second: one binary run.
+    expected = "s.bad,s.ok_4" if bad else "s.ok_1,s.ok_4"
+    assert runs == [expected]
     assert ("failed" if code else "passed") in text.splitlines()[0]
-    assert ("- `s.bad`" in text) == bool(code)
+    assert ("- `s.bad`" in text) == bad
+    assert execution["complete"] and execution["segments"] == 1
+
+
+@linux_only
+@pytest.mark.parametrize("stuck, outcome", [("hang", "timed out"), ("crash", "crashed")])
+def test_gtest_mode_continues_after_a_hung_or_crashed_test(tmp_path, rocm, stuck, outcome):
+    tests = ["ok_0", stuck, "ok_2", "ok_3"]
+    result, execution, text, runs = run_fake_gtest(
+        tmp_path, rocm, tests, ROCJITSU_GTEST_TEST_TIMEOUT="2"
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    # The binary restarts with only the tests after the stuck one.
+    assert runs == [f"s.ok_0,s.{stuck},s.ok_2,s.ok_3", "s.ok_2,s.ok_3"]
+    assert f"rocjitsu: {outcome}: s.{stuck}" in result.stdout
+    assert f"{outcome.capitalize()}:\n- `s.{stuck}`" in text
+    assert "| 4 | 3 |" in text
+    assert execution["segments"] == 2 and execution["complete"]
+
+
+@linux_only
+def test_gtest_mode_lists_tests_not_run_at_the_suite_timeout(tmp_path, rocm):
+    result, execution, text, runs = run_fake_gtest(
+        tmp_path, rocm, ["ok_0", "hang", "ok_2"],
+        ROCJITSU_GTEST_TEST_TIMEOUT="60", ROCJITSU_SUITE_TIMEOUT="3",
+    )
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert execution["timed_out"] and not execution["complete"]
+    assert runs == ["s.ok_0,s.hang,s.ok_2"]
+    assert "Not run: 2 tests (suite timeout)." in text
+
+
+def test_list_gtests_skips_disabled_tests():
+    listing = "noise\ns.\n  a  # GetParam() = 1\n  DISABLED_b\nDISABLED_t.\n  c\nu/p.\n  x/DISABLED_y\n  z\n"
+    command = [sys.executable, "-c", f"print({listing!r}, end='')"]
+    assert launcher.list_gtests(command, dict(os.environ)) == ["s.a", "u/p.z"]
+
+
+def test_gtest_line_reads_parameterized_failures():
+    line = "[  FAILED  ] _/m.matmul/quick_x, where GetParam() = { M: 1 } (5 ms)"
+    assert launcher.GTEST_LINE.match(line).groups() == ("FAILED", "_/m.matmul/quick_x")
+    assert launcher.GTEST_LINE.match("[----------] 3 tests from s") is None
 
 
 def test_gtest_mode_fails_without_results(tmp_path):
