@@ -111,7 +111,14 @@ if(${LINK_HIP_DEVICE_LIBS})
   check_language(HIP)
 endif()
 
-cmake_dependent_option(USE_HIPCXX "Use CMake HIP language support" OFF CMAKE_HIP_COMPILER OFF)
+# Compiling HIP sources as C++ requires a HIP capable C++ compiler, so use CMake's HIP
+# language support by default when the C++ compiler is not Clang.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  set(USE_HIPCXX_DEFAULT OFF)
+else()
+  set(USE_HIPCXX_DEFAULT ON)
+endif()
+cmake_dependent_option(USE_HIPCXX "Use CMake HIP language support" ${USE_HIPCXX_DEFAULT} CMAKE_HIP_COMPILER OFF)
 
 include(CheckCXXCompilerFlag)
 
@@ -176,6 +183,10 @@ include( ROCMCheckTargetIds )
 include( ROCMClients )
 
 if(USE_HIPCXX)
+  # The HIP language takes the GPU targets from CMAKE_HIP_ARCHITECTURES
+  if(NOT DEFINED CMAKE_HIP_ARCHITECTURES AND GPU_TARGETS AND NOT GPU_TARGETS STREQUAL "all")
+    set(CMAKE_HIP_ARCHITECTURES "${GPU_TARGETS}")
+  endif()
   enable_language(HIP)
 else()
   # Use target ID syntax if supported for GPU_TARGETS
