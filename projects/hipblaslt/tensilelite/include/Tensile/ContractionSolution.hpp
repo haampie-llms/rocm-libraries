@@ -190,7 +190,27 @@ namespace TensileLite
         X_MACRO(AddressScaleZeroA) \
         X_MACRO(ScaleBlockSizeA) \
         X_MACRO(ESMRuntimeSupported) \
-        X_MACRO(DeltaPeerD)
+        X_MACRO(DeltaPeerD) \
+        /* rocRoller Stream-K kernargs. rocRoller hoists its whole work
+           decomposition into kernargs; these are the host-evaluated values of
+           the .expression trees in the kernel's .amdgpu_metadata. The partial
+           tile scratch is AddressWorkspace and the flag region is
+           AddressSynchronizer. See RocRollerStreamKKernargs.hpp. */ \
+        X_MACRO(RR_SKNumTilesN) \
+        X_MACRO(RR_SKNumWGs) \
+        X_MACRO(RR_SKNumSKTiles) \
+        X_MACRO(RR_SKNumSKTilesPerWG) \
+        X_MACRO(RR_SKNumDPTiles) \
+        X_MACRO(RR_SKNumDPTilesPerWG) \
+        X_MACRO(RR_SKMagicMultipleIters) \
+        X_MACRO(RR_SKMagicShiftsIters) \
+        X_MACRO(RR_SKMagicMultipleNumTilesN) \
+        X_MACRO(RR_SKMagicShiftsNumTilesN) \
+        /* int64 ceil(size/tile) for a non-power-of-two macrotile. Other RR_* kernargs are 32-bit. */ \
+        X_MACRO(RR_NumTilesM) \
+        X_MACRO(RR_NumTilesN) \
+        /* K / mxBlockA, truncated: the K extent of A's MX scale tensor. */ \
+        X_MACRO(SizeSumScaleA)
 
     enum class CustomArgSemantic
     {
@@ -233,6 +253,16 @@ namespace TensileLite
         PersistentNoBatch,
         TilesYGSU,
         ComputeUnits,
+        // rocRoller's Stream-K decomposition is its own partitioning, carried
+        // in the kernargs above; it must not be routed through Tensile's.
+        //
+        // The identifier is suffixed only because this enum is unscoped: a bare
+        // RocRollerStreamK here would redeclare CustomWorkspaceType's
+        // enumerator of that name in the same namespace. The SERIALISED STRING
+        // is still "RocRollerStreamK" -- that is the contract with the logic
+        // files CustomKernels.py emits. Do not "fix" the toString to match the
+        // identifier.
+        RocRollerStreamKGrid,
         CustomGridSize_Count,
     };
 
@@ -247,6 +277,9 @@ namespace TensileLite
         SplitK,
         StreamK,
         StreamKWithReduction,
+        // One partial tile per workgroup, always reserved: rocRoller emits
+        // partials whenever tiles >= grid, with no `tiles % grid` exemption.
+        RocRollerStreamK,
         CustomWorkspaceType_Count,
     };
 
@@ -272,6 +305,10 @@ namespace TensileLite
         // rely on sizeMapping for workspace/Stream-K decisions, so several code
         // paths must treat them like the legacy non-custom case.
         bool generated = false;
+        // Workgroups this kernel can keep resident per CU, captured from its
+        // static resource usage. 0 means not recorded. Only the rocRoller
+        // Stream-K grid reads it (see rocRollerStreamKGrid).
+        size_t occupancy = 0;
         // Declared by a hand-written kernel that reduces every row of D in the
         // same order, so identical rows of A give bitwise-identical rows of D.
         // Uniform summation order refuses hand-written kernels without it.
@@ -620,6 +657,34 @@ namespace TensileLite
     {
     public:
         explicit UniformSummationOrderError(const std::string& what)
+            : std::runtime_error(what)
+        {
+        }
+    };
+
+    /**
+     * Thrown when a rocRoller Stream-K launch would run data-parallel tiles.
+     * The kernel cannot execute that regime. A distinct type so the rocblaslt
+     * host maps it to invalid_value; a generic runtime_error is an internal error.
+     */
+    class RocRollerStreamKDataParallelError : public std::runtime_error
+    {
+    public:
+        explicit RocRollerStreamKDataParallelError(const std::string& what)
+            : std::runtime_error(what)
+        {
+        }
+    };
+
+    /**
+     * Thrown when a rocRoller Stream-K launch is asked for a batch other than 1.
+     * The kernargs do not count batch. A distinct type so the host maps it to
+     * invalid_value, the same as the data-parallel refusal.
+     */
+    class RocRollerStreamKBatchError : public std::runtime_error
+    {
+    public:
+        explicit RocRollerStreamKBatchError(const std::string& what)
             : std::runtime_error(what)
         {
         }
@@ -1312,6 +1377,31 @@ namespace TensileLite
         AdaptiveGemmNTAB calculateAdaptiveGemmNTAB(Problem const&  problem,
                                                    Hardware const* hardware) const;
 
+        // True for an externally captured kernel (rocRoller, aiter, triton) as
+        // opposed to a Tensile-generated one that merely carries customKernel
+        // metadata. Public because hipBLASLt's dispatch layer needs it to tell
+        // the two apart when sizeMapping alone cannot (tensile_host.cpp).
+        bool handwrittenCustomKernel() const;
+
+        // True for a hand-written custom kernel launched on rocRoller's Stream-K
+        // grid: one whose grid or workspace is RocRollerStreamK, or that reads
+        // an RR_SK kernarg derived from that grid.
+        bool usesRocRollerStreamK() const;
+
+        // True when this solution is a rocRoller Stream-K kernel and the launch
+        // for problem would run data-parallel tiles, which the kernel cannot do
+        // (see rocRollerStreamKHasDataParallelTiles in RocRollerStreamKKernargs.hpp).
+        // The launch throws in that case; selection must refuse the solution.
+        //
+        // The grid origami picks depends on problem.workspaceSize(): a workspace
+        // too small for the partial tiles forces the grid to the tile count.
+        // A support check with a small workspace can therefore report no
+        // data-parallel tiles, and a later launch of the same problem with a
+        // larger workspace can throw. The check fails safe. It is not a
+        // function of the problem sizes alone.
+        bool rocRollerStreamKHasDataParallelTiles(Problem const&  problem,
+                                                  Hardware const& hardware) const;
+
     private:
         void validateStreamKClusterDescriptor() const;
 
@@ -1322,7 +1412,45 @@ namespace TensileLite
                                                  size_t         gsu,
                                                  size_t         tiles) const;
 
-        bool handwrittenCustomKernel() const;
+        // The Stream-K grid for a rocRoller custom kernel: the single source of
+        // truth for both the launch geometry and the numWGs kernarg, which must
+        // never disagree, and for the partial-tile workspace sized from it.
+        //
+        // Deliberately NOT getPersistentGridImpl() / resolveStreamKSettings():
+        // rocRoller partitions work differently and substituting Tensile's
+        // decomposition would silently corrupt its fixup pass.
+        //
+        // A port of rocRoller's chooseStreamKGridSize
+        // (library/src/amd_detail/rocblaslt/src/rocroller/runtime_args_selection.cpp):
+        // origami::streamk::select_reduction then select_grid_size, both in
+        // k_split_aware mode, over the same field set rocRoller populates. The
+        // marshalling lives in RocRollerStreamKGrid.hpp so the oracle test
+        // (tests/RocRollerStreamKGrid_test.cpp) can hold it against a verbatim
+        // transcription of that function.
+        //
+        // Deliberately NOT getPersistentGridImpl()'s origami adapter: that one
+        // also sets a_transpose, b_transpose, mi and workgroup_mapping and uses
+        // depthU for mt.k, which selects a different grid.
+        //
+        // One deviation, documented at the definition: customKernel.occupancy
+        // == 0 (not recorded by the logic file) means the grid cannot be
+        // reproduced at all, so this falls back to the CU count honouring
+        // smCountTarget and persistentMaxCUs, clamped to StreamKFlagElements.
+        // So does missing analytical hardware, and an empty problem (M, N or
+        // batch 0), on which origami divides by the zero tile count.
+        // chooseStreamKGridSize returns the origami answer unchanged. The
+        // launch keeps that answer when no workgroup holds a partial tile
+        // (tiles % grid == 0), which is a data-parallel grid of one workgroup
+        // per tile and may exceed StreamKFlagElements. A grid that does write
+        // flags (tiles % grid != 0) and is wider than that slot is clamped to
+        // it: each problem's flag slot is StreamKFlagElements ints.
+        // Defined in StreamK.cpp, next to the other Stream-K launch helpers.
+        uint32_t rocRollerStreamKGrid(Problem const& problem, Hardware const& hardware) const;
+
+        // The grid a launch uses, or a throw when that grid would run
+        // data-parallel tiles. Memoised by the caller.
+        uint32_t rocRollerStreamKCheckedGrid(Problem const&  problem,
+                                             Hardware const& hardware) const;
 
         // Same StreamK grid / reduction solve() packs, including the
         // insufficient-workspace fall back to tree + grid==tiles.
