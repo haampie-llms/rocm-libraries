@@ -105,6 +105,11 @@ rocrand_check_have_asm_incbin(ROCRAND_HAVE_ASM_INCBIN)
 # Get dependencies
 include(cmake/Dependencies.cmake)
 
+# Check for the HIP compiler, defines 'CMAKE_HIP_COMPILER'
+include(CheckLanguage)
+check_language(HIP)
+cmake_dependent_option(USE_HIPCXX "Use CMake HIP language support" OFF CMAKE_HIP_COMPILER OFF)
+
 # Detect compiler support for target ID
 if( CMAKE_CXX_COMPILER MATCHES ".*/hipcc$" )
     execute_process(COMMAND ${CMAKE_CXX_COMPILER} "--help"
@@ -128,7 +133,7 @@ else()
 endif()
 set_property(CACHE GPU_TARGETS PROPERTY STRINGS "all")
 
-if(GPU_TARGETS STREQUAL "all")
+if(GPU_TARGETS STREQUAL "all" AND NOT USE_HIPCXX)
   if(BUILD_ADDRESS_SANITIZER)
     # ASAN builds require xnack
     rocm_check_target_ids(DEFAULT_AMDGPU_TARGETS
@@ -141,6 +146,14 @@ if(GPU_TARGETS STREQUAL "all")
   endif()
 
   set(GPU_TARGETS "${DEFAULT_AMDGPU_TARGETS}" CACHE STRING "GPU architectures to compile for" FORCE)
+endif()
+
+if(USE_HIPCXX)
+  # The HIP language takes the GPU targets from CMAKE_HIP_ARCHITECTURES
+  if(NOT DEFINED CMAKE_HIP_ARCHITECTURES AND NOT GPU_TARGETS STREQUAL "all")
+    set(CMAKE_HIP_ARCHITECTURES "${GPU_TARGETS}")
+  endif()
+  enable_language(HIP)
 endif()
 
 # Verify the compiler settings and include the HIP CMake package
@@ -159,6 +172,18 @@ if(DISABLE_WERROR)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror")
+endif()
+if(USE_HIPCXX)
+    if (NOT DEFINED CMAKE_HIP_STANDARD)
+      set(CMAKE_HIP_STANDARD ${CMAKE_CXX_STANDARD})
+    endif()
+    set(CMAKE_HIP_STANDARD_REQUIRED ON)
+    set(CMAKE_HIP_EXTENSIONS OFF)
+    if(DISABLE_WERROR)
+        set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -Wall -Wextra")
+    else()
+        set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -Wall -Wextra -Werror")
+    endif()
 endif()
 if(CODE_COVERAGE)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Xarch_host -fprofile-instr-generate -Xarch_host -fcoverage-mapping")

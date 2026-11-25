@@ -77,6 +77,8 @@ function(add_test_target test_src is_internal)
       set_source_files_properties(${test_name} PROPERTIES CUDA_STANDARD 14)
     endif()
     set(CUDA_HOST_COMPILER ${CMAKE_CXX_COMPILER})
+  elseif(USE_HIPCXX)
+    set_source_files_properties(${test_src} PROPERTIES LANGUAGE HIP)
   endif()
   if(is_internal)
     target_include_directories(${test_name}
@@ -84,7 +86,7 @@ function(add_test_target test_src is_internal)
             $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/library/src>
             $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/test>
     )
-    set_target_properties(${test_name} PROPERTIES CXX_STANDARD 17)
+    set_target_properties(${test_name} PROPERTIES CXX_STANDARD 17 HIP_STANDARD 17)
   endif()
   if(TARGET GTest::gtest)
     target_link_libraries(${test_name}

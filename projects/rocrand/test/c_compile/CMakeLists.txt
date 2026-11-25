@@ -70,6 +70,9 @@ target_include_directories(rocrand_c_compile_obj
 )
 
 # gtest driver: links the compiled C objects and runs them as CTest cases.
+if(USE_HIPCXX)
+    set_source_files_properties(test_rocrand_c_compile.cpp PROPERTIES LANGUAGE HIP)
+endif()
 add_executable(test_rocrand_c_compile
     test_rocrand_c_compile.cpp
     $<TARGET_OBJECTS:rocrand_c_compile_obj>

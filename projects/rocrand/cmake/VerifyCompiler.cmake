@@ -21,7 +21,7 @@
 # SOFTWARE.
 
 list(APPEND CMAKE_PREFIX_PATH $ENV{ROCM_PATH} $ENV{ROCM_PATH}/hip $ENV{ROCM_PATH})
-if(CMAKE_CXX_COMPILER MATCHES ".*/nvcc$" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+if(NOT USE_HIPCXX AND (CMAKE_CXX_COMPILER MATCHES ".*/nvcc$" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU"))
     # Compiling for CUDA
     find_package(hip REQUIRED CONFIG PATHS $ENV{ROCM_PATH})
     if((HIP_COMPILER STREQUAL "clang"))
@@ -38,7 +38,7 @@ if(HIP_COMPILER STREQUAL "nvcc")
     # NVCC requires some additional setup
     include(SetupNVCC)
 elseif(HIP_COMPILER STREQUAL "clang")
-    if(NOT (CMAKE_CXX_COMPILER MATCHES ".*hipcc$" OR CMAKE_CXX_COMPILER MATCHES ".*clang\\+\\+"))
+    if(NOT USE_HIPCXX AND NOT (CMAKE_CXX_COMPILER MATCHES ".*hipcc$" OR CMAKE_CXX_COMPILER MATCHES ".*clang\\+\\+"))
         message(FATAL_ERROR "On ROCm platform 'hipcc' or HIP-aware Clang must be used as C++ compiler.")
     endif()
 else()
