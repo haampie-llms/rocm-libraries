@@ -45,6 +45,10 @@ if(REGRESSION_TEST_SOURCES)
     # Create single executable from all test sources
     set(TEST_TARGET rocwmma_regression_tests)
 
+    if(USE_HIPCXX)
+        set_source_files_properties(${REGRESSION_TEST_SOURCES} ${CMAKE_CURRENT_SOURCE_DIR}/../hip_device.cpp
+            PROPERTIES LANGUAGE HIP)
+    endif()
     add_executable(${TEST_TARGET}
         ${REGRESSION_TEST_SOURCES}
         ${CMAKE_CURRENT_SOURCE_DIR}/../hip_device.cpp)
