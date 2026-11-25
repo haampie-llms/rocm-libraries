@@ -128,6 +128,8 @@ foreach(test_src ${hipRAND_TEST_SRCS})
           CUDA_STANDARD 14
       )
       set(CUDA_HOST_COMPILER ${CMAKE_CXX_COMPILER})
+    elseif(USE_HIPCXX)
+      set_source_files_properties(${test_src} PROPERTIES LANGUAGE HIP)
     endif()
     target_include_directories(${test_name}
         PUBLIC

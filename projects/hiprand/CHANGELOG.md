@@ -8,6 +8,7 @@ Documentation for hipRAND is available at
 ### Added
 
 * gfx1250 support
+* The `USE_HIPCXX` CMake option compiles the HIP sources with CMake's HIP language support, so the C++ compiler does not have to be hipcc or Clang. It is off by default.
 
 ## Since last release ROCm 7.12
 

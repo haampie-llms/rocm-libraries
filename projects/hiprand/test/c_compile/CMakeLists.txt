@@ -61,6 +61,9 @@ target_include_directories(hiprand_c_compile_obj
 )
 
 # gtest driver: links the compiled C objects and runs them as CTest cases.
+if(USE_HIPCXX)
+    set_source_files_properties(test_hiprand_c_compile.cpp PROPERTIES LANGUAGE HIP)
+endif()
 add_executable(test_hiprand_c_compile
     test_hiprand_c_compile.cpp
     $<TARGET_OBJECTS:hiprand_c_compile_obj>

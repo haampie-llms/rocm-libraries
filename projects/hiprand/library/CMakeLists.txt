@@ -39,6 +39,8 @@ configure_file(
 if (BUILD_WITH_LIB STREQUAL "CUDA")
     set_source_files_properties(${hipRAND_SRCS} PROPERTIES LANGUAGE CUDA)
     set(CUDA_HOST_COMPILER ${CMAKE_CXX_COMPILER})
+elseif(USE_HIPCXX)
+    set_source_files_properties(${hipRAND_SRCS} PROPERTIES LANGUAGE HIP)
 endif()
 add_library(hiprand ${hipRAND_SRCS})
 add_library(hip::hiprand ALIAS hiprand)
@@ -58,6 +60,8 @@ if (BUILD_WITH_LIB STREQUAL "CUDA")
     target_link_libraries(hiprand
         ${CUDA_curand_LIBRARY}
     )
+elseif(USE_HIPCXX)
+    target_link_libraries(hiprand PUBLIC roc::rocrand hip::host)
 else()
     target_link_libraries(hiprand PRIVATE hip::device)
     target_link_libraries(hiprand PUBLIC roc::rocrand hip::host)

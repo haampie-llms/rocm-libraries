@@ -70,6 +70,12 @@ option(BUILD_SHARED_LIBS "Build shared" ON)
 set(BUILD_WITH_LIB "ROCM" CACHE STRING "Select backend library to build with (ROCM or CUDA)")
 set_property(CACHE BUILD_WITH_LIB PROPERTY STRINGS "ROCM" "CUDA")
 
+# Check for the HIP compiler, defines 'CMAKE_HIP_COMPILER'
+include(CheckLanguage)
+include(CMakeDependentOption)
+check_language(HIP)
+cmake_dependent_option(USE_HIPCXX "Use CMake HIP language support" OFF CMAKE_HIP_COMPILER OFF)
+
 # Set up options for obtaining dependency rocPRIM.
 # PACKAGE: Search for an install package that contains the dependency.
 # MONOREPO: Assume this is a monorepo checkout and search for the dependency in the directory at ../../projects/.
@@ -141,11 +147,19 @@ if (NOT BUILD_WITH_LIB STREQUAL "CUDA")
   endif()
   set_property(CACHE GPU_TARGETS PROPERTY STRINGS "all")
 
-  if(GPU_TARGETS STREQUAL "all")
+  if(GPU_TARGETS STREQUAL "all" AND NOT USE_HIPCXX)
     rocm_check_target_ids(DEFAULT_AMDGPU_TARGETS
       TARGETS "gfx803;gfx900:xnack-;gfx906:xnack-;gfx908:xnack-;gfx90a:xnack-;gfx90a:xnack+;gfx942;gfx950;gfx1030;gfx1100;gfx1101;gfx1102;gfx1150;gfx1151;gfx1152;gfx1153;gfx1170;gfx1171;gfx1200;gfx1201;gfx1250"
     )
     set(GPU_TARGETS "${DEFAULT_AMDGPU_TARGETS}" CACHE STRING "GPU architectures to compile for" FORCE)
+  endif()
+
+  if(USE_HIPCXX)
+    # The HIP language takes the GPU targets from CMAKE_HIP_ARCHITECTURES
+    if(NOT DEFINED CMAKE_HIP_ARCHITECTURES AND NOT GPU_TARGETS STREQUAL "all")
+      set(CMAKE_HIP_ARCHITECTURES "${GPU_TARGETS}")
+    endif()
+    enable_language(HIP)
   endif()
 else()
   set(GPU_TARGETS "all" CACHE INTERNAL "")
@@ -173,6 +187,18 @@ if(DISABLE_WERROR)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
 else()
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Werror")
+endif()
+if(USE_HIPCXX)
+    if (NOT DEFINED CMAKE_HIP_STANDARD)
+      set(CMAKE_HIP_STANDARD ${CMAKE_CXX_STANDARD})
+    endif()
+    set(CMAKE_HIP_STANDARD_REQUIRED ON)
+    set(CMAKE_HIP_EXTENSIONS OFF)
+    if(DISABLE_WERROR)
+        set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -Wall -Wextra")
+    else()
+        set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -Wall -Wextra -Werror")
+    endif()
 endif()
 
 if (CMAKE_CXX_STANDARD EQUAL 14)
