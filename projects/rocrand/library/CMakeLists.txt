@@ -23,6 +23,7 @@
 # rocRAND library
 # C++17 is used internally
 set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_HIP_STANDARD 17)
 # Get sources
 set(rocRAND_HIP_SRCS
     "src/rng/generator_type_lfsr113.cpp"
@@ -82,6 +83,7 @@ target_sources(rocrand PRIVATE ${SOBOL_PRECOMPUTED_SOURCES})
 
 set_target_properties(rocrand PROPERTIES
   CXX_VISIBILITY_PRESET hidden
+  HIP_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
 )
 
@@ -112,6 +114,9 @@ if(HIP_COMPILER STREQUAL "nvcc")
         set_source_files_properties(${rocRAND_HIP_SRCS} PROPERTIES COMPILE_OPTIONS "-std=c++17")
     endif()
     set(CUDA_HOST_COMPILER ${CMAKE_CXX_COMPILER})
+elseif(USE_HIPCXX)
+    set_source_files_properties(${rocRAND_HIP_SRCS} PROPERTIES LANGUAGE HIP)
+    target_link_libraries(rocrand PUBLIC hip::host)
 else()
     target_link_libraries(rocrand PRIVATE hip::device)
     target_link_libraries(rocrand PUBLIC hip::host)

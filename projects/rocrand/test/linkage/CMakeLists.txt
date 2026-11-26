@@ -35,6 +35,8 @@ function(add_rocrand_link_test TEST_SOURCES)
             LANGUAGE CUDA
             CUDA_STANDARD 14
         )
+    elseif(USE_HIPCXX)
+        set_source_files_properties(${TEST_SOURCES} PROPERTIES LANGUAGE HIP)
     endif()
 
     if(TARGET GTest::GTest)

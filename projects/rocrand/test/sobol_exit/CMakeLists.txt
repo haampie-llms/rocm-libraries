@@ -29,6 +29,9 @@ if(HIP_COMPILER STREQUAL "nvcc")
     return()
 endif()
 
+if(USE_HIPCXX)
+    set_source_files_properties(test_rocrand_sobol_exit.cpp PROPERTIES LANGUAGE HIP)
+endif()
 add_executable(test_rocrand_sobol_exit test_rocrand_sobol_exit.cpp)
 
 if(USE_SYSTEM_LIB)

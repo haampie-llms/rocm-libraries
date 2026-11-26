@@ -21,6 +21,7 @@ Documentation for rocRAND is available at
 
 ### Added
 
+* The `USE_HIPCXX` CMake option compiles the HIP sources with CMake's HIP language support, so the C++ compiler does not have to be hipcc or Clang. It is off by default.
 * New unit tests in `test/test_rocrand_cpp_wrapper.cpp` that call `operator()` on each C++ wrapper engine and compare the output distribution with a reference using a two-sample Kolmogorov-Smirnov test.
 * Added Sobol direction vector equidistribution and scramble tests.
 

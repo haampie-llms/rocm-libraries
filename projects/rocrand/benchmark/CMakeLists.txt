@@ -57,6 +57,9 @@ function(add_benchmark benchmark_src)
     )
     target_link_libraries(${BENCHMARK_TARGET} PRIVATE ${CUDA_curand_LIBRARY})
   else()
+    if(USE_HIPCXX)
+      set_source_files_properties(${benchmark_src} PROPERTIES LANGUAGE HIP)
+    endif()
     target_link_libraries(${BENCHMARK_TARGET} PRIVATE rocrand hip::device)
   endif()
 
@@ -109,8 +112,9 @@ if(BUILD_BENCHMARK_TUNING)
   endif()
 
   set(CMAKE_CXX_STANDARD 17)
+  set(CMAKE_HIP_STANDARD 17)
 
-  add_executable(benchmark_rocrand_tuning
+  set(BENCHMARK_TUNING_SOURCES
     tuning_host_api.cpp
     tuning/lfsr113.cpp
     tuning/mrg31k3p.cpp
@@ -124,6 +128,10 @@ if(BUILD_BENCHMARK_TUNING)
     tuning/threefry4x64_20.cpp
     tuning/xorwow.cpp
   )
+  if(USE_HIPCXX)
+    set_source_files_properties(${BENCHMARK_TUNING_SOURCES} PROPERTIES LANGUAGE HIP)
+  endif()
+  add_executable(benchmark_rocrand_tuning ${BENCHMARK_TUNING_SOURCES})
 
   target_link_libraries(benchmark_rocrand_tuning PRIVATE rocrand hip::device)
   target_include_directories(benchmark_rocrand_tuning PRIVATE
@@ -154,7 +162,8 @@ if(BUILD_BENCHMARK_TUNING)
     target_link_libraries(benchmark_rocrand_tuning PRIVATE amd_smi)
   endif()
 
-  if(NOT WIN32)
+  # With USE_HIPCXX, the HIP sources of rocrand are compiled for CMAKE_HIP_ARCHITECTURES
+  if(NOT WIN32 AND NOT USE_HIPCXX)
     foreach(amdgpu_target ${AMDGPU_TARGETS})
         target_compile_options(rocrand PRIVATE --offload-arch=${amdgpu_target})
     endforeach()
