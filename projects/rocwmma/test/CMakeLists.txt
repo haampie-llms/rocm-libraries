@@ -144,6 +144,9 @@ file(WRITE "${INSTALL_REGRESSION_TEST_FILE}"
 function(add_rocwmma_test_target TEST_TARGET TEST_SOURCE)
 
   list(APPEND TEST_SOURCE ${ARGN})
+  if(USE_HIPCXX)
+    set_source_files_properties(${TEST_SOURCE} PROPERTIES LANGUAGE HIP)
+  endif()
   add_executable(${TEST_TARGET} ${TEST_SOURCE})
   target_link_libraries(${TEST_TARGET} rocwmma GTest::gtest)
   target_link_libraries(${TEST_TARGET} ${ROCWMMA_OPENMP_LIBRARY})

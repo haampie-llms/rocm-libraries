@@ -5,6 +5,10 @@ Documentation for rocWMMA is available at
 
 ## Unreleased
 
+### Added
+
+* The `USE_HIPCXX` CMake option compiles the samples and tests with CMake's HIP language support, so the C++ compiler does not have to be hipcc or Clang.
+
 ### Changed
 
 * int8 WMMA on gfx11, gfx1170, gfx1171, gfx1200 and gfx1201 now wraps on int32 overflow instead of saturating. This matches gfx1250, uint8 inputs, MFMA targets and the reference implementations. Results differ only when an int32 result overflows.

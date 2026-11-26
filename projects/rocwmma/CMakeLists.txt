@@ -56,22 +56,41 @@ endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Check and test hip compiler, defines 'CMAKE_HIP_COMPILER'
+include(CheckLanguage)
+include(CMakeDependentOption)
+check_language(HIP)
+cmake_dependent_option(USE_HIPCXX "Use CMake HIP language support" OFF CMAKE_HIP_COMPILER OFF)
+if(USE_HIPCXX)
+  # GPU_TARGETS selects the GPU targets, a CMAKE_HIP_ARCHITECTURES given instead initializes it
+  if(NOT DEFINED GPU_TARGETS AND NOT DEFINED AMDGPU_TARGETS AND DEFINED CMAKE_HIP_ARCHITECTURES)
+    set(GPU_TARGETS "${CMAKE_HIP_ARCHITECTURES}" CACHE STRING "List of specific machine types for library to target")
+  endif()
+  enable_language(HIP)
+  set(CMAKE_HIP_STANDARD 17)
+  set(CMAKE_HIP_STANDARD_REQUIRED ON)
+  set(CMAKE_HIP_EXTENSIONS OFF)
+  set(ROCWMMA_GPU_LANGUAGE HIP)
+else()
+  set(ROCWMMA_GPU_LANGUAGE CXX)
+endif()
+include(cmake/Macros/CheckGPUCompiler.cmake)
+
 #Set Clang C++ flags.
-set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g -O2") # clang++ crashes without -O2
-set(CMAKE_CXX_FLAGS_MINSIZEREL "${CMAKE_CXX_FLAGS_MINSIZEREL} -O2 -DNDEBUG") # clang++ failed to build the project with the default -Os
+set(CMAKE_${ROCWMMA_GPU_LANGUAGE}_FLAGS_DEBUG "${CMAKE_${ROCWMMA_GPU_LANGUAGE}_FLAGS_DEBUG} -g -O2") # clang++ crashes without -O2
+set(CMAKE_${ROCWMMA_GPU_LANGUAGE}_FLAGS_MINSIZEREL "${CMAKE_${ROCWMMA_GPU_LANGUAGE}_FLAGS_MINSIZEREL} -O2 -DNDEBUG") # clang++ failed to build the project with the default -Os
 # Parallel offload compilation is spelled --offload-jobs= from LLVM 21 on and -parallel-jobs= before it.
-include(CheckCXXCompilerFlag)
-check_cxx_compiler_flag("--offload-jobs=4" CXX_COMPILER_SUPPORTS_OFFLOAD_JOBS)
+rocwmma_check_gpu_compiler_flag("--offload-jobs=4" CXX_COMPILER_SUPPORTS_OFFLOAD_JOBS)
 if(CXX_COMPILER_SUPPORTS_OFFLOAD_JOBS)
   set(ROCWMMA_OFFLOAD_JOBS_FLAG "--offload-jobs=4")
 else()
-  check_cxx_compiler_flag("-parallel-jobs=4" CXX_COMPILER_SUPPORTS_PARALLEL_JOBS)
+  rocwmma_check_gpu_compiler_flag("-parallel-jobs=4" CXX_COMPILER_SUPPORTS_PARALLEL_JOBS)
   if(CXX_COMPILER_SUPPORTS_PARALLEL_JOBS)
     set(ROCWMMA_OFFLOAD_JOBS_FLAG "-parallel-jobs=4")
   endif()
 endif()
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} --driver-mode=g++ -D__HIP_HCC_COMPAT_MODE__=1 -Wno-format-nonliteral ${ROCWMMA_OFFLOAD_JOBS_FLAG} -fclang-abi-compat=17")
+set(CMAKE_${ROCWMMA_GPU_LANGUAGE}_FLAGS "${CMAKE_${ROCWMMA_GPU_LANGUAGE}_FLAGS} --driver-mode=g++ -D__HIP_HCC_COMPAT_MODE__=1 -Wno-format-nonliteral ${ROCWMMA_OFFLOAD_JOBS_FLAG} -fclang-abi-compat=17")
 
 # Top level configs
 if( CMAKE_PROJECT_NAME STREQUAL "rocwmma" )
@@ -125,13 +144,13 @@ endif()
 
 if (ADDRESS_SANITIZER_ENABLED)
     #TODO: Remove next line when rocm-cmake fix is available
-    rocm_check_target_ids(DEFAULT_GPU_TARGETS
+    rocwmma_check_target_ids(DEFAULT_GPU_TARGETS
         TARGETS "gfx90a:xnack+\
 ;gfx942:xnack+\
 ;gfx950:xnack+\
 " )
 else()
-    rocm_check_target_ids(DEFAULT_GPU_TARGETS
+    rocwmma_check_target_ids(DEFAULT_GPU_TARGETS
         TARGETS "gfx908\
 ;gfx90a\
 ;gfx942\
@@ -161,9 +180,8 @@ else()
 endif()
 
 # Check if offload compression is supported
-include(CheckCXXCompilerFlag)
 if (BUILD_OFFLOAD_COMPRESS)
-  check_cxx_compiler_flag("--offload-compress" CXX_COMPILER_SUPPORTS_OFFLOAD_COMPRESS)
+  rocwmma_check_gpu_compiler_flag("--offload-compress" CXX_COMPILER_SUPPORTS_OFFLOAD_COMPRESS)
 endif()
 
 # TODO: Remove next line when rocm-cmake fix is available
@@ -196,6 +214,10 @@ else()
   endif()
 endif()
 message(STATUS "GPU_TARGETS=${GPU_TARGETS}")
+if(USE_HIPCXX)
+  # The HIP language takes the GPU targets from CMAKE_HIP_ARCHITECTURES
+  set(CMAKE_HIP_ARCHITECTURES "${GPU_TARGETS}")
+endif()
 
 find_package( hip REQUIRED )
 find_package( hiprtc REQUIRED )
