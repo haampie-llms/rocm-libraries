@@ -6,6 +6,10 @@
 
 * `HIPCCL_ENABLE_COVERAGE`, which enables `ROCPRIM_ENABLE_COVERAGE`, `HIPCUB_ENABLE_COVERAGE`, and `ROCTHRUST_ENABLE_COVERAGE` together.
 
+### Changed
+
+* `USE_HIPCXX` is now enabled by default when a HIP compiler is found and the C++ compiler is not Clang, so the C++ compiler does not have to be hipcc. In `USE_HIPCXX` mode, `GPU_TARGETS` sets the GPU architectures of the HIP sources.
+
 ### Removed
 
 * Deprecated `BUILD_CODE_COVERAGE`, use `HIPCCL_ENABLE_COVERAGE` instead.
